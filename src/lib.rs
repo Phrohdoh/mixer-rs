@@ -5,6 +5,14 @@ use std::io::{Read, Seek, SeekFrom, BufReader};
 use std::path::Path;
 use std::fs::File;
 
+extern crate crc;
+use crc::{crc32, Hasher32};
+
+pub enum HashType {
+    Crc32,
+    Custom,
+}
+
 struct MixHeader {
     num_files: u16,
     header_end_offset: u64,
@@ -12,15 +20,46 @@ struct MixHeader {
 
 #[derive(Debug)]
 pub struct EntryHeader {
-    hash: u32,
-    offset: u32,
-    len: u32,
+    pub hash: u64,
+    pub offset: u32,
+    pub len: u32,
 }
 
-pub fn get_entry_headers<P: AsRef<Path> + std::fmt::Debug>(file_path: P) -> Vec<EntryHeader> {
+pub fn read_entry_headers<P: AsRef<Path> + std::fmt::Debug>(file_path: P) -> Vec<EntryHeader> {
     let f = File::open(&file_path).unwrap();
     let br = BufReader::new(f);
     read(br).unwrap()
+}
+
+pub fn calc_hash_of(string: &str, hash_type: HashType) -> u64 {
+    match hash_type {
+        HashType::Crc32 => {
+            crc32::checksum_ieee(string.as_bytes()) as u64
+        },
+        HashType::Custom => {
+            let upper = {
+                let mut u = string.to_uppercase();
+                if u.len() % 4 != 0 {
+                    u = format!("{:\0<more$}", u, more = u.len() + (4 - u.len() % 4));
+                }
+
+                u
+            };
+
+            let mut len = upper.len() >> 2;
+            let mut res: u64 = 0;
+
+            let bytes = upper.as_bytes();
+            let mut rdr = BufReader::new(bytes);
+
+            while (len != 0) {
+                len -= 1;
+                res = ((res << 1) | (res >> 31)) + (rdr.read_u32::<LittleEndian>().unwrap() as u64);
+            }
+
+            res
+        }
+    }
 }
 
 fn read<T: Read + Seek>(mut data: T) -> Result<Vec<EntryHeader>, std::io::Error> {
@@ -57,7 +96,7 @@ fn read_header<T: Read + Seek>(data: &mut T, abs_offset: u64) -> Result<MixHeade
 }
 
 fn read_entry_header<T: Read + Seek>(data: &mut T) -> Result<EntryHeader, std::io::Error> {
-    let hash = data.read_u32::<LittleEndian>()?;
+    let hash = data.read_u32::<LittleEndian>()? as u64;
     let offset = data.read_u32::<LittleEndian>()?;
     let len = data.read_u32::<LittleEndian>()?;
 
